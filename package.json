@@ -1,0 +1,266 @@
+{
+  "name": "infisical-ai",
+  "displayName": "Infisical AI",
+  "description": "AI-powered Infisical secrets management for VS Code",
+  "version": "0.1.0",
+  "publisher": "infisical",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Infisical/infisical-ai-vscode"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "secrets",
+    "security",
+    "infisical",
+    "environment",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "infisicalAi.openControlPanel",
+        "title": "Open Control Panel",
+        "category": "Infisical AI"
+      },
+      {
+        "command": "infisicalAi.login",
+        "title": "Login to Infisical",
+        "category": "Infisical AI",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "infisicalAi.logout",
+        "title": "Logout",
+        "category": "Infisical AI",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "infisicalAi.refreshSecrets",
+        "title": "Refresh Secrets",
+        "category": "Infisical AI",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "infisicalAi.createSecret",
+        "title": "Create Secret",
+        "category": "Infisical AI",
+        "icon": "$(add)"
+      },
+      {
+        "command": "infisicalAi.updateSecret",
+        "title": "Update Secret",
+        "category": "Infisical AI",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "infisicalAi.deleteSecret",
+        "title": "Delete Secret",
+        "category": "Infisical AI",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "infisicalAi.explainUsage",
+        "title": "Explain Secret Usage",
+        "category": "Infisical AI",
+        "icon": "$(info)"
+      },
+      {
+        "command": "infisicalAi.autoFixMissing",
+        "title": "Auto-fix Missing Secrets",
+        "category": "Infisical AI",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "infisicalAi.smartDiff",
+        "title": "Smart Diff Secrets",
+        "category": "Infisical AI",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "infisicalAi.nlAction",
+        "title": "Natural Language Action",
+        "category": "Infisical AI",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "infisicalAi.switchEnvironment",
+        "title": "Switch Environment",
+        "category": "Infisical AI",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "infisicalAi.showSecretDetail",
+        "title": "Show Secret Details",
+        "category": "Infisical AI",
+        "icon": "$(info)"
+      },
+      {
+        "command": "infisicalAi.filterSecrets",
+        "title": "Filter Secrets",
+        "category": "Infisical AI",
+        "icon": "$(search)"
+      },
+      {
+        "command": "infisicalAi.setSecretPath",
+        "title": "Set Secret Path",
+        "category": "Infisical AI",
+        "icon": "$(folder)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "infisical",
+          "title": "Infisical AI",
+          "icon": "$(key)"
+        }
+      ]
+    },
+    "views": {
+      "infisical": [
+        {
+          "id": "infisicalSecrets",
+          "name": "Secrets",
+          "when": "infisicalAi.authenticated"
+        },
+        {
+          "id": "infisicalAuth",
+          "name": "Authentication",
+          "when": "!infisicalAi.authenticated"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "infisicalAi.refreshSecrets",
+          "when": "view == infisicalSecrets",
+          "group": "navigation"
+        },
+        {
+          "command": "infisicalAi.createSecret",
+          "when": "view == infisicalSecrets && infisicalAi.canWrite",
+          "group": "navigation"
+        },
+        {
+          "command": "infisicalAi.filterSecrets",
+          "when": "view == infisicalSecrets",
+          "group": "navigation"
+        },
+        {
+          "command": "infisicalAi.setSecretPath",
+          "when": "view == infisicalSecrets",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "infisicalAi.updateSecret",
+          "when": "view == infisicalSecrets && viewItem == secret && infisicalAi.canWrite",
+          "group": "inline"
+        },
+        {
+          "command": "infisicalAi.deleteSecret",
+          "when": "view == infisicalSecrets && viewItem == secret && infisicalAi.canDelete",
+          "group": "inline"
+        },
+        {
+          "command": "infisicalAi.explainUsage",
+          "when": "view == infisicalSecrets && viewItem == secret",
+          "group": "ai"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "infisicalAi.updateSecret",
+          "when": "false"
+        },
+        {
+          "command": "infisicalAi.deleteSecret",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Infisical AI",
+      "properties": {
+        "infisicalAi.baseUrl": {
+          "type": "string",
+          "default": "https://us.infisical.com",
+          "enum": [
+            "https://us.infisical.com",
+            "https://eu.infisical.com"
+          ],
+          "enumDescriptions": [
+            "US Region",
+            "EU Region"
+          ],
+          "description": "Infisical API base URL (US or EU region)"
+        },
+        "infisicalAi.telemetryEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable telemetry collection for improving the extension"
+        },
+        "infisicalAi.autoRefreshInterval": {
+          "type": "number",
+          "default": 300000,
+          "description": "Auto-refresh interval for secrets in milliseconds (0 to disable)"
+        },
+        "infisicalAi.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum number of API retry attempts"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "webpack --mode production",
+    "watch": "webpack --mode development --watch",
+    "dev": "webpack --mode development",
+    "test-compile": "tsc -p ./",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.74.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^6.4.0",
+    "@typescript-eslint/parser": "^6.4.0",
+    "@vscode/test-electron": "^2.3.4",
+    "@vscode/vsce": "^2.19.0",
+    "css-loader": "^6.8.1",
+    "eslint": "^8.47.0",
+    "html-webpack-plugin": "^5.5.3",
+    "style-loader": "^3.3.3",
+    "ts-loader": "^9.4.4",
+    "typescript": "^5.1.6",
+    "vitest": "^1.0.0",
+    "webpack": "^5.88.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "dotenv": "^16.3.1"
+  }
+}
