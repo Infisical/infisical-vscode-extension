@@ -6,7 +6,7 @@ Browse and manage your [Infisical](https://infisical.com) secrets without leavin
 
 - Tree view of every project, environment, folder, and secret you can access.
 - Reveal, copy, edit, create, and delete secrets from the sidebar.
-- Universal Auth login against Infisical Cloud (US/EU) or any self-hosted instance.
+- User login against Infisical Cloud (US/EU) or any self-hosted instance.
 
 ## Getting started
 
