@@ -11,10 +11,16 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "moduleResolution": "node",
-    "jsx": "react-jsx"
+    "moduleResolution": "node"
   },
-  "exclude": ["node_modules", ".vscode-test"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".vscode-test",
+    "vitest.config.ts",
+    "out",
+    "dist"
+  ]
 }

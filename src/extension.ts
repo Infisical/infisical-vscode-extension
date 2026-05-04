@@ -1,642 +1,444 @@
-import * as vscode from 'vscode';
-import { InfisicalSecretsProvider } from './providers/SecretsProvider';
-import { AuthProvider } from './providers/AuthProvider';
-import { ControlPanelProvider } from './providers/ControlPanelProvider';
-import { InfisicalApi } from './api/InfisicalApi';
-import { TokenStore } from './utils/TokenStore';
-import { TelemetryService } from './utils/TelemetryService';
-import { ErrorHandler } from './utils/ErrorHandler';
-import { WorkspaceState } from './utils/WorkspaceState';
+import * as http from "http";
+import * as net from "net";
+import * as vscode from "vscode";
+import {
+  InfisicalApi,
+  InfisicalEnvironment,
+  InfisicalProject,
+} from "./api/InfisicalApi";
+import { TokenStore } from "./utils/TokenStore";
+import {
+  EnvironmentNode,
+  FolderNode,
+  InfisicalTreeProvider,
+  ProjectNode,
+  SecretNode,
+} from "./providers/SecretsProvider";
+import { PanelContext, SecretsPanel } from "./panels/SecretsPanel";
+import { extractErrorMessage } from "./utils/errors";
 
-let secretsProvider: InfisicalSecretsProvider;
-let authProvider: AuthProvider;
-let controlPanelProvider: ControlPanelProvider;
-let infisicalApi: InfisicalApi;
-let telemetryService: TelemetryService;
-let workspaceState: WorkspaceState;
-let statusBarItem: vscode.StatusBarItem;
+let api: InfisicalApi;
+let tree: InfisicalTreeProvider;
+const log = vscode.window.createOutputChannel("Infisical");
+log.show(true);
 
-export function activate(context: vscode.ExtensionContext) {
-  console.log('Infisical AI extension is now active!');
-
+export async function activate(context: vscode.ExtensionContext) {
   const tokenStore = new TokenStore(context.globalState, context.secrets);
-  const config = vscode.workspace.getConfiguration('infisicalAi');
-  const baseUrl = config.get<string>('baseUrl', 'https://us.infisical.com');
-  
-  workspaceState = new WorkspaceState(context.workspaceState);
-  infisicalApi = new InfisicalApi(baseUrl, tokenStore);
-  telemetryService = new TelemetryService(context, config.get<boolean>('telemetryEnabled', false));
-  
-  secretsProvider = new InfisicalSecretsProvider(infisicalApi, workspaceState);
-  authProvider = new AuthProvider(infisicalApi, context);
-  controlPanelProvider = new ControlPanelProvider(context.extensionUri, infisicalApi, workspaceState);
+  const config = vscode.workspace.getConfiguration("infisical");
+  const baseUrl = config.get<string>("baseUrl", "https://us.infisical.com");
 
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.command = 'infisicalAi.switchEnvironment';
-  updateStatusBar();
-
-  const secretsTreeView = vscode.window.createTreeView('infisicalSecrets', {
-    treeDataProvider: secretsProvider,
-    showCollapseAll: true
+  api = new InfisicalApi(baseUrl, tokenStore, () => {
+    vscode.commands.executeCommand('setContext', 'infisical.authenticated', false);
+    tree.clearScopes();
+    tree.refresh();
+    vscode.window.showWarningMessage('Infisical session expired. Please log in again.');
   });
-
-  const authTreeView = vscode.window.createTreeView('infisicalAuth', {
-    treeDataProvider: authProvider,
-    showCollapseAll: false
-  });
-
-  vscode.commands.executeCommand('setContext', 'infisicalAi.authenticated', false);
-
-  const commands = [
-    vscode.commands.registerCommand('infisicalAi.openControlPanel', async () => {
-      try {
-        await controlPanelProvider.show();
-        telemetryService.track('controlPanelOpened');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to open control panel');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.login', async () => {
-      try {
-        const regions = [
-          { label: '🇺🇸 US Region (us.infisical.com)', value: 'US' },
-          { label: '🇪🇺 EU Region (eu.infisical.com)', value: 'EU' }
-        ];
-
-        const selectedRegion = await vscode.window.showQuickPick(regions, {
-          placeHolder: 'Select your Infisical region'
-        });
-
-        if (!selectedRegion) {
-          return;
-        }
-
-        const clientId = await vscode.window.showInputBox({
-          prompt: 'Enter Universal Auth Client ID',
-          ignoreFocusOut: true,
-          password: false,
-          placeHolder: 'Your Universal Auth Client ID'
-        });
-
-        if (!clientId) {
-          return;
-        }
-
-        const clientSecret = await vscode.window.showInputBox({
-          prompt: 'Enter Universal Auth Client Secret',
-          ignoreFocusOut: true,
-          password: true,
-          placeHolder: 'Your Universal Auth Client Secret'
-        });
-
-        if (!clientSecret) {
-          return;
-        }
-
-        await vscode.window.withProgress({
-          location: vscode.ProgressLocation.Notification,
-          title: 'Authenticating with Infisical Universal Auth...',
-          cancellable: false
-        }, async () => {
-          const baseUrl = selectedRegion.value === 'EU' ? 'https://eu.infisical.com' : 'https://us.infisical.com';
-          infisicalApi.setBaseUrl(baseUrl);
-          
-          await infisicalApi.login({ clientId, clientSecret });
-          await vscode.commands.executeCommand('setContext', 'infisicalAi.authenticated', true);
-          secretsProvider.refresh();
-          authProvider.refresh();
-        });
-
-        vscode.window.showInformationMessage(`Successfully authenticated with Infisical ${selectedRegion.value} region!`);
-        telemetryService.track('loginSuccess', { region: selectedRegion.value });
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to authenticate with Infisical');
-        telemetryService.track('loginError', { error: String(error) });
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.logout', async () => {
-      try {
-        await infisicalApi.logout();
-        await vscode.commands.executeCommand('setContext', 'infisicalAi.authenticated', false);
-        secretsProvider.refresh();
-        authProvider.refresh();
-        vscode.window.showInformationMessage('Successfully logged out from Infisical');
-        telemetryService.track('logout');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to log out');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.refreshSecrets', async () => {
-      try {
-        await secretsProvider.loadSecrets();
-        telemetryService.track('secretsRefreshed');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to refresh secrets');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.createSecret', async () => {
-      try {
-        if (!workspaceState.canCreateSecrets()) {
-          vscode.window.showWarningMessage('Insufficient privileges to create secrets. You have read-only access.');
-          return;
-        }
-
-        const key = await vscode.window.showInputBox({
-          prompt: 'Enter secret key',
-          ignoreFocusOut: true
-        });
-
-        if (!key) {
-          return;
-        }
-
-        const value = await vscode.window.showInputBox({
-          prompt: 'Enter secret value',
-          ignoreFocusOut: true,
-          password: true
-        });
-
-        if (!value) {
-          return;
-        }
-
-        await infisicalApi.createSecret(key, value);
-        secretsProvider.refresh();
-        vscode.window.showInformationMessage(`Secret "${key}" created successfully`);
-        telemetryService.track('secretCreated');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to create secret');
-        // Check if permission downgrade occurred
-        if (error instanceof Error && error.message.includes('downgraded to read-only')) {
-          await workspaceState.updatePermissions(
-            infisicalApi.getWorkspacePermissions(workspaceState.getCurrentProjectId() || '') || 
-            { canRead: true, canWrite: false, canDelete: false, canCreateSecrets: false, canUpdateSecrets: false, canDeleteSecrets: false, roles: ['viewer'], effectiveRole: 'viewer' }
-          );
-          updateStatusBar();
-        }
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.updateSecret', async (secretItem) => {
-      try {
-        if (!workspaceState.canUpdateSecrets()) {
-          vscode.window.showWarningMessage('Insufficient privileges to update secrets. You have read-only access.');
-          return;
-        }
-
-        if (!secretItem?.key) {
-          return;
-        }
-
-        const newValue = await vscode.window.showInputBox({
-          prompt: `Enter new value for "${secretItem.key}"`,
-          ignoreFocusOut: true,
-          password: true
-        });
-
-        if (!newValue) {
-          return;
-        }
-
-        await infisicalApi.updateSecret(secretItem.key, newValue);
-        secretsProvider.refresh();
-        vscode.window.showInformationMessage(`Secret "${secretItem.key}" updated successfully`);
-        telemetryService.track('secretUpdated');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to update secret');
-        // Check if permission downgrade occurred
-        if (error instanceof Error && error.message.includes('downgraded to read-only')) {
-          await workspaceState.updatePermissions(
-            infisicalApi.getWorkspacePermissions(workspaceState.getCurrentProjectId() || '') || 
-            { canRead: true, canWrite: false, canDelete: false, canCreateSecrets: false, canUpdateSecrets: false, canDeleteSecrets: false, roles: ['viewer'], effectiveRole: 'viewer' }
-          );
-          updateStatusBar();
-        }
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.deleteSecret', async (secretItem) => {
-      try {
-        if (!workspaceState.canDeleteSecrets()) {
-          vscode.window.showWarningMessage('Insufficient privileges to delete secrets. You have read-only access.');
-          return;
-        }
-
-        if (!secretItem?.key) {
-          return;
-        }
-
-        const confirm = await vscode.window.showWarningMessage(
-          `Are you sure you want to delete secret "${secretItem.key}"?`,
-          { modal: true },
-          'Delete'
-        );
-
-        if (confirm !== 'Delete') {
-          return;
-        }
-
-        await infisicalApi.deleteSecret(secretItem.key);
-        secretsProvider.refresh();
-        vscode.window.showInformationMessage(`Secret "${secretItem.key}" deleted successfully`);
-        telemetryService.track('secretDeleted');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to delete secret');
-        // Check if permission downgrade occurred
-        if (error instanceof Error && error.message.includes('downgraded to read-only')) {
-          await workspaceState.updatePermissions(
-            infisicalApi.getWorkspacePermissions(workspaceState.getCurrentProjectId() || '') || 
-            { canRead: true, canWrite: false, canDelete: false, canCreateSecrets: false, canUpdateSecrets: false, canDeleteSecrets: false, roles: ['viewer'], effectiveRole: 'viewer' }
-          );
-          updateStatusBar();
-        }
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.explainUsage', async (secretItem) => {
-      try {
-        if (!secretItem?.key) {
-          return;
-        }
-
-        vscode.window.showInformationMessage(`AI explanation for "${secretItem.key}" would appear here`);
-        telemetryService.track('explainUsage', { secretKey: secretItem.key });
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to explain usage');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.autoFixMissing', async () => {
-      try {
-        vscode.window.showInformationMessage('AI auto-fix for missing secrets would run here');
-        telemetryService.track('autoFixMissing');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to auto-fix missing secrets');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.smartDiff', async () => {
-      try {
-        vscode.window.showInformationMessage('Smart diff comparison would appear here');
-        telemetryService.track('smartDiff');
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to run smart diff');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.nlAction', async () => {
-      try {
-        const action = await vscode.window.showInputBox({
-          prompt: 'Describe what you want to do with your secrets',
-          ignoreFocusOut: true,
-          placeHolder: 'e.g., "Create a secret for database URL"'
-        });
-
-        if (!action) {
-          return;
-        }
-
-        vscode.window.showInformationMessage(`AI would process: "${action}"`);
-        telemetryService.track('nlAction', { action });
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to process natural language action');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.switchEnvironment', async () => {
-      try {
-        if (!infisicalApi.isAuthenticated()) {
-          vscode.window.showWarningMessage('Please authenticate with Infisical first');
-          return;
-        }
-
-        const currentState = workspaceState.getProjectEnvironment();
-        if (!currentState?.projectId) {
-          vscode.window.showWarningMessage('No project selected. Please select a project first in the Control Panel');
-          return;
-        }
-
-        const project = await infisicalApi.getProject(currentState.projectId);
-        const environments = project.environments.map(env => ({
-          label: env.name,
-          description: env.slug,
-          value: env.slug
-        }));
-
-        const selected = await vscode.window.showQuickPick(environments, {
-          placeHolder: `Current: ${currentState.environmentName || currentState.environmentSlug}`,
-          title: `Switch Environment for ${project.name}`
-        });
-
-        if (!selected) {
-          return;
-        }
-
-        const env = project.environments.find(e => e.slug === selected.value);
-        if (!env) {
-          return;
-        }
-
-        await workspaceState.setProjectEnvironment({
-          projectId: project.id,
-          projectName: project.name,
-          environmentSlug: env.slug,
-          environmentName: env.name,
-          lastSelected: Date.now()
-        });
-
-        updateStatusBar();
-        await secretsProvider.loadSecrets();
-        vscode.window.showInformationMessage(`Switched to ${env.name} environment`);
-        telemetryService.track('environmentSwitched', { 
-          projectId: project.id, 
-          environment: env.slug 
-        });
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to switch environment');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.updateStatusBar', () => {
-      updateStatusBar();
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.showSecretDetail', async (secret) => {
-      try {
-        if (!secret?.secretKey) {
-          return;
-        }
-
-        const panel = vscode.window.createWebviewPanel(
-          'secretDetail',
-          `Secret: ${secret.secretKey}`,
-          vscode.ViewColumn.Two,
-          {
-            enableScripts: false,
-            retainContextWhenHidden: false
-          }
-        );
-
-        const maskedValue = secret.secretValue.length <= 4 
-          ? '••••' 
-          : secret.secretValue.substring(0, 2) + '••••' + secret.secretValue.substring(secret.secretValue.length - 2);
-
-        const tags = secret.tags.map((tag: any) => `<span class="tag">${tag.name}</span>`).join('');
-
-        panel.webview.html = `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Secret Details</title>
-            <style>
-              body { 
-                font-family: var(--vscode-font-family); 
-                color: var(--vscode-foreground);
-                padding: 20px;
-                line-height: 1.6;
-              }
-              .field { 
-                margin-bottom: 16px; 
-                padding: 12px;
-                background: var(--vscode-editor-inactiveSelectionBackground);
-                border-radius: 4px;
-              }
-              .label { 
-                font-weight: bold; 
-                color: var(--vscode-textPreformat-foreground);
-                margin-bottom: 4px;
-              }
-              .value { 
-                font-family: var(--vscode-editor-font-family);
-                background: var(--vscode-textCodeBlock-background);
-                padding: 8px;
-                border-radius: 3px;
-                border: 1px solid var(--vscode-panel-border);
-              }
-              .tag {
-                background: var(--vscode-badge-background);
-                color: var(--vscode-badge-foreground);
-                padding: 2px 6px;
-                border-radius: 12px;
-                font-size: 12px;
-                margin-right: 6px;
-              }
-              .readonly-notice {
-                background: var(--vscode-inputValidation-infoBackground);
-                color: var(--vscode-inputValidation-infoForeground);
-                border: 1px solid var(--vscode-inputValidation-infoBorder);
-                padding: 12px;
-                border-radius: 4px;
-                margin-bottom: 20px;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="readonly-notice">
-              🔒 Read-only view - Values are masked for security
-            </div>
-            
-            <div class="field">
-              <div class="label">Secret Key</div>
-              <div class="value">${secret.secretKey}</div>
-            </div>
-            
-            <div class="field">
-              <div class="label">Secret Value</div>
-              <div class="value">${maskedValue}</div>
-            </div>
-            
-            <div class="field">
-              <div class="label">Type</div>
-              <div class="value">${secret.type}</div>
-            </div>
-            
-            ${secret.secretComment ? `
-            <div class="field">
-              <div class="label">Comment</div>
-              <div class="value">${secret.secretComment}</div>
-            </div>
-            ` : ''}
-            
-            ${secret.secretPath !== '/' ? `
-            <div class="field">
-              <div class="label">Path</div>
-              <div class="value">${secret.secretPath}</div>
-            </div>
-            ` : ''}
-            
-            ${tags ? `
-            <div class="field">
-              <div class="label">Tags</div>
-              <div class="value">${tags}</div>
-            </div>
-            ` : ''}
-            
-            <div class="field">
-              <div class="label">Environment</div>
-              <div class="value">${secret.environment}</div>
-            </div>
-            
-            <div class="field">
-              <div class="label">Version</div>
-              <div class="value">${secret.version}</div>
-            </div>
-            
-            <div class="field">
-              <div class="label">Created</div>
-              <div class="value">${new Date(secret.createdAt).toLocaleString()}</div>
-            </div>
-            
-            <div class="field">
-              <div class="label">Last Updated</div>
-              <div class="value">${new Date(secret.updatedAt).toLocaleString()}</div>
-            </div>
-          </body>
-          </html>
-        `;
-
-        telemetryService.track('secretDetailViewed', { secretKey: secret.secretKey });
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to show secret details');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.filterSecrets', async () => {
-      try {
-        const currentFilter = secretsProvider.getCurrentFilter();
-        const filter = await vscode.window.showInputBox({
-          prompt: 'Enter filter text to search secrets by key, comment, or tags',
-          value: currentFilter,
-          placeHolder: 'e.g., database, api, env'
-        });
-
-        if (filter !== undefined) {
-          secretsProvider.setFilter(filter);
-          telemetryService.track('secretsFiltered', { filterLength: filter.length });
-        }
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to filter secrets');
-      }
-    }),
-
-    vscode.commands.registerCommand('infisicalAi.setSecretPath', async () => {
-      try {
-        const currentPath = secretsProvider.getCurrentSecretPath();
-        const path = await vscode.window.showInputBox({
-          prompt: 'Enter secret path (use / for root)',
-          value: currentPath,
-          placeHolder: '/',
-          validateInput: (value) => {
-            if (!value) {
-              return 'Path cannot be empty';
-            }
-            if (!value.startsWith('/')) {
-              return 'Path must start with /';
-            }
-            return null;
-          }
-        });
-
-        if (path !== undefined) {
-          secretsProvider.setSecretPath(path);
-          telemetryService.track('secretPathChanged', { path });
-        }
-      } catch (error) {
-        ErrorHandler.handle(error, 'Failed to set secret path');
-      }
-    })
-  ];
-
-  context.subscriptions.push(
-    ...commands,
-    secretsTreeView,
-    authTreeView,
-    statusBarItem,
-    telemetryService
-  );
-
-  const autoRefreshInterval = config.get<number>('autoRefreshInterval', 300000);
-  if (autoRefreshInterval > 0) {
-    const refreshTimer = setInterval(() => {
-      if (infisicalApi.isAuthenticated() && workspaceState.hasProjectEnvironment()) {
-        secretsProvider.loadSecrets();
-      }
-    }, autoRefreshInterval);
-
-    context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) });
-  }
-
-  if (infisicalApi.isAuthenticated()) {
-    vscode.commands.executeCommand('setContext', 'infisicalAi.authenticated', true);
-  }
-}
-
-function updateStatusBar() {
-  if (!statusBarItem) {
-    return;
-  }
-
-  if (!infisicalApi.isAuthenticated()) {
-    statusBarItem.text = '$(key) Infisical: Not authenticated';
-    statusBarItem.tooltip = 'Click to authenticate with Infisical';
-    statusBarItem.command = 'infisicalAi.login';
-    statusBarItem.show();
-    
-    // Clear permission contexts
-    vscode.commands.executeCommand('setContext', 'infisicalAi.canWrite', false);
-    vscode.commands.executeCommand('setContext', 'infisicalAi.canDelete', false);
-    return;
-  }
-
-  const currentState = workspaceState.getProjectEnvironment();
-  if (!currentState) {
-    statusBarItem.text = '$(key) Infisical: No project';
-    statusBarItem.tooltip = 'Click to select a project and environment';
-    statusBarItem.command = 'infisicalAi.openControlPanel';
-    statusBarItem.show();
-    
-    // Clear permission contexts
-    vscode.commands.executeCommand('setContext', 'infisicalAi.canWrite', false);
-    vscode.commands.executeCommand('setContext', 'infisicalAi.canDelete', false);
-    return;
-  }
-
-  const displayName = workspaceState.getDisplayName();
-  const permissions = workspaceState.getPermissions();
-  
-  statusBarItem.text = `$(key) Infisical: ${displayName}`;
-  
-  // Enhanced tooltip with permission information
-  let tooltip = `Current: ${displayName}\nRole: ${workspaceState.getEffectiveRole()}`;
-  if (permissions) {
-    if (workspaceState.isReadOnly()) {
-      tooltip += '\n🔒 Read-only access';
-    } else {
-      tooltip += '\n✏️ Read/Write access';
+  tree = new InfisicalTreeProvider(api);
+
+  if (api.isAuthenticated()) {
+    try {
+      await api.checkAuth();
+    } catch {
+      await api.logout();
     }
   }
-  tooltip += '\nClick to switch environment';
-  
-  statusBarItem.tooltip = tooltip;
-  statusBarItem.command = 'infisicalAi.switchEnvironment';
-  statusBarItem.show();
-  
-  // Set permission contexts for conditional menu items
-  vscode.commands.executeCommand('setContext', 'infisicalAi.canWrite', workspaceState.canUpdateSecrets());
-  vscode.commands.executeCommand('setContext', 'infisicalAi.canDelete', workspaceState.canDeleteSecrets());
+
+  await vscode.commands.executeCommand(
+    "setContext",
+    "infisical.authenticated",
+    api.isAuthenticated(),
+  );
+
+  const view = vscode.window.createTreeView("infisicalSecrets", {
+    treeDataProvider: tree,
+    showCollapseAll: true,
+  });
+
+  context.subscriptions.push(
+    view,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("infisical.baseUrl")) {
+        const newBase = vscode.workspace
+          .getConfiguration("infisical")
+          .get<string>("baseUrl", "https://us.infisical.com");
+        api.setBaseUrl(newBase);
+        tree.refresh();
+      }
+    }),
+    vscode.commands.registerCommand("infisical.login", () => login()),
+    vscode.commands.registerCommand("infisical.logout", () => logout()),
+    vscode.commands.registerCommand("infisical.refresh", () => {
+      tree.refresh();
+      SecretsPanel.current()?.refresh();
+    }),
+    vscode.commands.registerCommand(
+      "infisical.openSecretsPanel",
+      (context: PanelContext) => {
+        if (!context) return;
+        SecretsPanel.show(api, context, () => tree.refresh());
+      },
+    ),
+    vscode.commands.registerCommand(
+      "infisical.revealValues",
+      (node: EnvironmentNode | FolderNode) => toggleScopeReveal(node, true),
+    ),
+    vscode.commands.registerCommand(
+      "infisical.hideValues",
+      (node: EnvironmentNode | FolderNode) => toggleScopeReveal(node, false),
+    ),
+    vscode.commands.registerCommand("infisical.createSecret", (node) =>
+      createSecret(node),
+    ),
+    vscode.commands.registerCommand(
+      "infisical.updateSecret",
+      (node: SecretNode) => updateSecret(node),
+    ),
+    vscode.commands.registerCommand(
+      "infisical.deleteSecret",
+      (node: SecretNode) => deleteSecret(node),
+    ),
+    vscode.commands.registerCommand(
+      "infisical.viewSecret",
+      (node: SecretNode) => viewSecret(node),
+    ),
+    vscode.commands.registerCommand(
+      "infisical.copySecretValue",
+      (node: SecretNode) => copySecretValue(node),
+    ),
+  );
 }
 
-export function deactivate() {
-  if (telemetryService) {
-    telemetryService.dispose();
+export function deactivate() {}
+
+async function login() {
+  const regions = [
+    {
+      label: "US Region (us.infisical.com)",
+      value: "https://us.infisical.com",
+    },
+    {
+      label: "EU Region (eu.infisical.com)",
+      value: "https://eu.infisical.com",
+    },
+    { label: "Self-hosted (custom URL)", value: "CUSTOM" },
+  ];
+
+  const selected = await vscode.window.showQuickPick(regions, {
+    placeHolder: "Select your Infisical region",
+  });
+  if (!selected) return;
+
+  let baseUrl = selected.value;
+  if (baseUrl === "CUSTOM") {
+    const custom = await vscode.window.showInputBox({
+      prompt: "Enter your self-hosted Infisical URL",
+      placeHolder: "https://your-infisical-instance.com",
+      ignoreFocusOut: true,
+      validateInput: (v) => {
+        if (!v) return "URL is required";
+        try {
+          new URL(v.startsWith("http") ? v : `https://${v}`);
+          return null;
+        } catch {
+          return "Invalid URL";
+        }
+      },
+    });
+    if (!custom) return;
+    baseUrl = custom.endsWith("/") ? custom.slice(0, -1) : custom;
+    if (!baseUrl.startsWith("http")) baseUrl = `https://${baseUrl}`;
   }
-  if (statusBarItem) {
-    statusBarItem.dispose();
+
+  try {
+    api.setBaseUrl(baseUrl);
+    await vscode.workspace
+      .getConfiguration("infisical")
+      .update("baseUrl", baseUrl, vscode.ConfigurationTarget.Global);
+
+    const token = await openBrowserLogin(baseUrl);
+    await api.setUserToken(token);
+    await vscode.commands.executeCommand(
+      "setContext",
+      "infisical.authenticated",
+      true,
+    );
+    tree.refresh();
+    vscode.window.showInformationMessage("Logged in to Infisical");
+  } catch (error) {
+    showError(error, "Login failed");
   }
+}
+
+function openBrowserLogin(baseUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+
+    server.on("error", reject);
+
+    server.listen(0, "127.0.0.1", async () => {
+      const { port } = server.address() as net.AddressInfo;
+
+      const timer = setTimeout(() => {
+        server.close();
+        reject(new Error("Login timed out. Please try again."));
+      }, 120_000);
+
+      const corsHeaders = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "content-type",
+      };
+
+      server.on("request", (req, res) => {
+        log.appendLine(`[login] ${req.method} ${req.url}`);
+
+        if (req.method === "OPTIONS") {
+          res.writeHead(204, corsHeaders);
+          res.end();
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          const rawBody = Buffer.concat(chunks).toString();
+
+          let token: string | undefined;
+          try {
+            const body = JSON.parse(rawBody);
+            log.appendLine(
+              `[login] parsed keys: ${Object.keys(body).join(", ")}`,
+            );
+            token = body.JTWToken;
+          } catch (e) {
+            log.appendLine(`[login] JSON parse error: ${e}`);
+          }
+
+          res.writeHead(200, {
+            ...corsHeaders,
+            "Content-Type": "text/html; charset=utf-8",
+          });
+          res.end(
+            token
+              ? '<html><body style="font-family:system-ui;padding:40px;text-align:center"><h2>Login successful</h2><p>You can close this tab and return to VS Code.</p></body></html>'
+              : '<html><body style="font-family:system-ui;padding:40px;text-align:center"><h2>Login failed</h2><p>No token received.</p></body></html>',
+          );
+
+          clearTimeout(timer);
+          server.close();
+
+          if (token) {
+            resolve(token);
+            log.appendLine("Successfully logged into Infisical");
+          } else {
+            reject(new Error("No token received from Infisical"));
+          }
+        });
+      });
+
+      await vscode.env.openExternal(
+        vscode.Uri.parse(`${baseUrl}/login?callback_port=${port}`),
+      );
+    });
+  });
+}
+
+async function logout() {
+  await api.logout();
+  await vscode.commands.executeCommand(
+    "setContext",
+    "infisical.authenticated",
+    false,
+  );
+  tree.clearScopes();
+  tree.refresh();
+  vscode.window.showInformationMessage("Logged out of Infisical");
+}
+
+async function createSecret(
+  node: EnvironmentNode | FolderNode | ProjectNode | undefined,
+) {
+  const target = await resolveCreateTarget(node);
+  if (!target) return;
+
+  const secretKey = await vscode.window.showInputBox({
+    prompt: "Secret name",
+    placeHolder: "API_KEY",
+    ignoreFocusOut: true,
+    validateInput: (v) => (v && v.trim() ? null : "Name is required"),
+  });
+  if (!secretKey) return;
+
+  const secretValue = await vscode.window.showInputBox({
+    prompt: `Value for ${secretKey}`,
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (secretValue === undefined) return;
+
+  try {
+    await api.createSecret({
+      workspaceId: target.project.id,
+      environment: target.environment.slug,
+      secretKey: secretKey.trim(),
+      secretValue,
+      secretPath: target.path,
+    });
+    tree.refresh();
+    SecretsPanel.current()?.refresh();
+    vscode.window.showInformationMessage(`Created ${secretKey}`);
+  } catch (error) {
+    showError(error, "Failed to create secret");
+  }
+}
+
+async function updateSecret(node: SecretNode) {
+  if (!node) return;
+  const value = await vscode.window.showInputBox({
+    prompt: `New value for ${node.secret.secretKey}`,
+    value: node.secret.secretValue,
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (value === undefined) return;
+
+  try {
+    await api.updateSecret({
+      workspaceId: node.project.id,
+      environment: node.environment.slug,
+      secretKey: node.secret.secretKey,
+      secretValue: value,
+      secretPath: node.secretPath,
+    });
+    tree.refresh();
+    SecretsPanel.current()?.refresh();
+    vscode.window.showInformationMessage(`Updated ${node.secret.secretKey}`);
+  } catch (error) {
+    showError(error, "Failed to update secret");
+  }
+}
+
+async function deleteSecret(node: SecretNode) {
+  if (!node) return;
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete secret "${node.secret.secretKey}"?`,
+    { modal: true },
+    "Delete",
+  );
+  if (confirm !== "Delete") return;
+
+  try {
+    await api.deleteSecret({
+      workspaceId: node.project.id,
+      environment: node.environment.slug,
+      secretKey: node.secret.secretKey,
+      secretPath: node.secretPath,
+    });
+    tree.refresh();
+    SecretsPanel.current()?.refresh();
+    vscode.window.showInformationMessage(`Deleted ${node.secret.secretKey}`);
+  } catch (error) {
+    showError(error, "Failed to delete secret");
+  }
+}
+
+async function viewSecret(node: SecretNode) {
+  if (!node) return;
+  const action = await vscode.window.showQuickPick(
+    [
+      { label: "$(eye) Reveal value", value: "reveal" },
+      { label: "$(copy) Copy value", value: "copy" },
+      { label: "$(edit) Edit value", value: "edit" },
+      { label: "$(trash) Delete secret", value: "delete" },
+    ],
+    { placeHolder: node.secret.secretKey },
+  );
+  if (!action) return;
+
+  switch (action.value) {
+    case "reveal":
+      await vscode.window.showInformationMessage(
+        `${node.secret.secretKey} = ${node.secret.secretValue}`,
+        { modal: true },
+      );
+      break;
+    case "copy":
+      await copySecretValue(node);
+      break;
+    case "edit":
+      await updateSecret(node);
+      break;
+    case "delete":
+      await deleteSecret(node);
+      break;
+  }
+}
+
+function toggleScopeReveal(
+  node: EnvironmentNode | FolderNode,
+  reveal: boolean,
+) {
+  if (!node) return;
+  const path = node instanceof FolderNode ? node.fullPath : "/";
+  if (reveal) {
+    tree.revealScope(node.project.id, node.environment.slug, path);
+  } else {
+    tree.hideScope(node.project.id, node.environment.slug, path);
+  }
+}
+
+async function copySecretValue(node: SecretNode) {
+  if (!node) return;
+  await vscode.env.clipboard.writeText(node.secret.secretValue);
+  vscode.window.showInformationMessage(`Copied ${node.secret.secretKey}`);
+}
+
+interface CreateTarget {
+  project: InfisicalProject;
+  environment: InfisicalEnvironment;
+  path: string;
+}
+
+async function resolveCreateTarget(
+  node: EnvironmentNode | FolderNode | ProjectNode | undefined,
+): Promise<CreateTarget | undefined> {
+  if (node instanceof FolderNode) {
+    return {
+      project: node.project,
+      environment: node.environment,
+      path: node.fullPath,
+    };
+  }
+  if (node instanceof EnvironmentNode) {
+    return { project: node.project, environment: node.environment, path: "/" };
+  }
+
+  const projects = await api.getProjects();
+  if (projects.length === 0) {
+    vscode.window.showWarningMessage("No projects available");
+    return undefined;
+  }
+  const projectPick = await vscode.window.showQuickPick(
+    projects.map((p) => ({ label: p.name, description: p.slug, project: p })),
+    { placeHolder: "Select a project" },
+  );
+  if (!projectPick) return undefined;
+
+  const environments = await api.getEnvironments(projectPick.project.id);
+  if (environments.length === 0) {
+    vscode.window.showWarningMessage("No environments in project");
+    return undefined;
+  }
+  const envPick = await vscode.window.showQuickPick(
+    environments.map((e) => ({ label: e.name, description: e.slug, env: e })),
+    { placeHolder: "Select an environment" },
+  );
+  if (!envPick) return undefined;
+
+  return { project: projectPick.project, environment: envPick.env, path: "/" };
+}
+
+function showError(error: unknown, context: string) {
+  console.error(context, error);
+  vscode.window.showErrorMessage(`${context}: ${extractErrorMessage(error)}`);
 }

@@ -1,285 +1,292 @@
 import * as vscode from 'vscode';
-import { InfisicalApi, InfisicalSecretV3, InfisicalSecretTag, AccessError } from '../api/InfisicalApi';
-import { WorkspaceState } from '../utils/WorkspaceState';
+import {
+  InfisicalApi,
+  InfisicalEnvironment,
+  InfisicalFolder,
+  InfisicalProject,
+  InfisicalSecret
+} from '../api/InfisicalApi';
 
-export class SecretItem extends vscode.TreeItem {
+export const ContextValue = {
+  Project: 'infisical.project',
+  Environment: 'infisical.environment',
+  EnvironmentRevealed: 'infisical.environment.revealed',
+  Folder: 'infisical.folder',
+  FolderRevealed: 'infisical.folder.revealed',
+  Secret: 'infisical.secret'
+} as const;
+
+export type TreeNode =
+  | ProjectNode
+  | EnvironmentNode
+  | FolderNode
+  | SecretNode
+  | MessageNode;
+
+export class ProjectNode extends vscode.TreeItem {
+  readonly kind = 'project' as const;
+
+  constructor(public readonly project: InfisicalProject) {
+    super(project.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = ContextValue.Project;
+    this.iconPath = new vscode.ThemeIcon('folder-library');
+    this.tooltip = `Project: ${project.name}\nID: ${project.id}`;
+  }
+}
+
+export class EnvironmentNode extends vscode.TreeItem {
+  readonly kind = 'environment' as const;
+
   constructor(
-    public readonly secret: InfisicalSecretV3,
-    public readonly collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.None
+    public readonly project: InfisicalProject,
+    public readonly environment: InfisicalEnvironment,
+    public readonly revealed: boolean = false
   ) {
-    super(secret.secretKey, collapsibleState);
-    
-    const maskedValue = this.maskValue(secret.secretValue);
-    this.description = maskedValue;
-    this.tooltip = this.buildTooltip(secret);
-    this.contextValue = 'secret';
-    this.iconPath = this.getIconForSecret(secret);
-    
+    super(environment.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = revealed
+      ? ContextValue.EnvironmentRevealed
+      : ContextValue.Environment;
+    this.iconPath = new vscode.ThemeIcon('symbol-namespace');
+    this.description = environment.slug;
+    this.tooltip = `Environment: ${environment.name} (${environment.slug})`;
     this.command = {
-      command: 'infisicalAi.showSecretDetail',
-      title: 'Show Secret Details',
-      arguments: [secret]
+      command: 'infisical.openSecretsPanel',
+      title: 'Open Secrets',
+      arguments: [{ project, environment, path: '/' }]
+    };
+  }
+}
+
+export class FolderNode extends vscode.TreeItem {
+  readonly kind = 'folder' as const;
+
+  constructor(
+    public readonly project: InfisicalProject,
+    public readonly environment: InfisicalEnvironment,
+    public readonly parentPath: string,
+    public readonly folder: InfisicalFolder,
+    public readonly revealed: boolean = false
+  ) {
+    super(folder.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = revealed ? ContextValue.FolderRevealed : ContextValue.Folder;
+    this.iconPath = vscode.ThemeIcon.Folder;
+    this.tooltip = `Folder: ${this.fullPath}`;
+    this.command = {
+      command: 'infisical.openSecretsPanel',
+      title: 'Open Secrets',
+      arguments: [{ project, environment, path: this.fullPath }]
     };
   }
 
-  private maskValue(value: string): string {
-    if (value.length <= 4) {
-      return '••••';
-    }
-    return value.substring(0, 2) + '••••' + value.substring(value.length - 2);
-  }
-
-  private buildTooltip(secret: InfisicalSecretV3): string {
-    const maskedValue = this.maskValue(secret.secretValue);
-    const tags = secret.tags.map(t => t.name).join(', ');
-    
-    let tooltip = `Key: ${secret.secretKey}\nValue: ${maskedValue}\nType: ${secret.type}`;
-    
-    if (secret.secretComment) {
-      tooltip += `\nComment: ${secret.secretComment}`;
-    }
-    
-    if (tags) {
-      tooltip += `\nTags: ${tags}`;
-    }
-    
-    if (secret.secretPath !== '/') {
-      tooltip += `\nPath: ${secret.secretPath}`;
-    }
-    
-    tooltip += `\nUpdated: ${new Date(secret.updatedAt).toLocaleDateString()}`;
-    
-    return tooltip;
-  }
-
-  private getIconForSecret(secret: InfisicalSecretV3): vscode.ThemeIcon {
-    if (secret.type === 'personal') {
-      return new vscode.ThemeIcon('person');
-    }
-    
-    if (secret.tags.some(tag => tag.name.toLowerCase().includes('env'))) {
-      return new vscode.ThemeIcon('symbol-variable');
-    }
-    
-    if (secret.tags.some(tag => tag.name.toLowerCase().includes('db'))) {
-      return new vscode.ThemeIcon('database');
-    }
-    
-    return new vscode.ThemeIcon('key');
+  get fullPath(): string {
+    return joinSecretPath(this.parentPath, this.folder.name);
   }
 }
 
-export class SecretPathItem extends vscode.TreeItem {
+export class SecretNode extends vscode.TreeItem {
+  readonly kind = 'secret' as const;
+
   constructor(
-    public readonly path: string,
-    public readonly secretCount: number,
-    public readonly collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Collapsed
+    public readonly project: InfisicalProject,
+    public readonly environment: InfisicalEnvironment,
+    public readonly secretPath: string,
+    public readonly secret: InfisicalSecret,
+    public readonly revealed: boolean = false
   ) {
-    super(path === '/' ? 'Root' : path.split('/').pop() || path, collapsibleState);
-    this.description = `${secretCount} secrets`;
-    this.tooltip = `Path: ${path}\n${secretCount} secrets`;
-    this.contextValue = 'secretPath';
-    this.iconPath = new vscode.ThemeIcon('folder');
+    super(secret.secretKey, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = ContextValue.Secret;
+    this.iconPath = new vscode.ThemeIcon('key');
+    this.description = revealed
+      ? secret.secretValue || '(empty)'
+      : maskValue(secret.secretValue);
+    this.tooltip = new vscode.MarkdownString(
+      `**${secret.secretKey}**\n\nPath: \`${secretPath}\`\n\nClick to view & edit.`
+    );
+    this.command = {
+      command: 'infisical.viewSecret',
+      title: 'View Secret',
+      arguments: [this]
+    };
   }
 }
 
-export class ErrorItem extends vscode.TreeItem {
-  constructor(message: string, action?: string, command?: string) {
-    super(message, vscode.TreeItemCollapsibleState.None);
-    this.iconPath = new vscode.ThemeIcon('error');
-    this.contextValue = 'error';
-    
-    if (action && command) {
-      this.command = {
-        command,
-        title: action,
-        arguments: []
-      };
-    }
-  }
-}
-
-export class LoadingItem extends vscode.TreeItem {
-  constructor(message: string = 'Loading secrets...') {
-    super(message, vscode.TreeItemCollapsibleState.None);
-    this.iconPath = new vscode.ThemeIcon('loading~spin');
-    this.contextValue = 'loading';
-  }
-}
-
-export class InfisicalSecretsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
-  private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
-  readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
-
-  private secrets: InfisicalSecretV3[] = [];
-  private loading = false;
-  private error: string | null = null;
-  private filter = '';
-  private secretPath = '/';
+export class MessageNode extends vscode.TreeItem {
+  readonly kind = 'message' as const;
 
   constructor(
-    private infisicalApi: InfisicalApi,
-    private workspaceState: WorkspaceState
-  ) {}
+    label: string,
+    icon: string,
+    command?: vscode.Command,
+    contextValue?: string
+  ) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon(icon);
+    if (command) this.command = command;
+    if (contextValue) this.contextValue = contextValue;
+  }
+}
 
-  refresh(): void {
-    this._onDidChangeTreeData.fire();
+export function joinSecretPath(parent: string, name: string): string {
+  return parent === '/' ? `/${name}` : `${parent}/${name}`;
+}
+
+function maskValue(value: string): string {
+  if (!value) return '(empty)';
+  if (value.length <= 4) return '••••';
+  return value.slice(0, 2) + '••••' + value.slice(-2);
+}
+
+function scopeKey(projectId: string, envSlug: string, path: string): string {
+  return `${projectId}|${envSlug}|${path}`;
+}
+
+function ancestorPaths(path: string): string[] {
+  if (path === '/') return ['/'];
+  const parts = path.split('/').filter(Boolean);
+  const out = ['/'];
+  let acc = '';
+  for (const part of parts) {
+    acc += `/${part}`;
+    out.push(acc);
+  }
+  return out;
+}
+
+export class InfisicalTreeProvider implements vscode.TreeDataProvider<TreeNode> {
+  private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  private readonly revealedScopes = new Set<string>();
+
+  constructor(private api: InfisicalApi) {}
+
+  refresh(node?: TreeNode): void {
+    this._onDidChangeTreeData.fire(node);
   }
 
-  setFilter(filter: string): void {
-    this.filter = filter.toLowerCase();
+  revealScope(projectId: string, envSlug: string, path: string): void {
+    const key = scopeKey(projectId, envSlug, path);
+    if (this.revealedScopes.has(key)) return;
+    this.revealedScopes.add(key);
     this.refresh();
   }
 
-  setSecretPath(path: string): void {
-    this.secretPath = path || '/';
-    this.loadSecrets();
-  }
-
-  async loadSecrets(): Promise<void> {
-    const state = this.workspaceState.getProjectEnvironment();
-    if (!state?.projectId || !state?.environmentSlug) {
-      this.secrets = [];
-      this.error = null;
-      this.refresh();
-      return;
-    }
-
-    this.loading = true;
-    this.error = null;
+  hideScope(projectId: string, envSlug: string, path: string): void {
+    const key = scopeKey(projectId, envSlug, path);
+    if (!this.revealedScopes.delete(key)) return;
     this.refresh();
-
-    try {
-      const secrets = await this.infisicalApi.listSecrets({
-        workspaceId: state.projectId,
-        environment: state.environmentSlug,
-        secretPath: this.secretPath
-      });
-
-      this.secrets = secrets;
-      this.loading = false;
-      this.refresh();
-    } catch (error) {
-      this.loading = false;
-      if (this.isAccessError(error)) {
-        this.error = error.message;
-      } else if (error instanceof Error) {
-        this.error = error.message;
-      } else {
-        this.error = 'Failed to load secrets';
-      }
-      this.refresh();
-    }
   }
 
-  getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+  hasScope(projectId: string, envSlug: string, path: string): boolean {
+    return this.revealedScopes.has(scopeKey(projectId, envSlug, path));
+  }
+
+  isPathRevealed(projectId: string, envSlug: string, path: string): boolean {
+    for (const ancestor of ancestorPaths(path)) {
+      if (this.revealedScopes.has(scopeKey(projectId, envSlug, ancestor))) return true;
+    }
+    return false;
+  }
+
+  clearScopes(): void {
+    if (this.revealedScopes.size === 0) return;
+    this.revealedScopes.clear();
+    this.refresh();
+  }
+
+  getTreeItem(element: TreeNode): vscode.TreeItem {
     return element;
   }
 
-  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-    if (!this.infisicalApi.isAuthenticated()) {
-      return [new ErrorItem('Not authenticated', 'Login', 'infisicalAi.login')];
+  async getChildren(element?: TreeNode): Promise<TreeNode[]> {
+    if (!this.api.isAuthenticated()) {
+      return [
+        new MessageNode('Login to Infisical', 'sign-in', {
+          command: 'infisical.login',
+          title: 'Login'
+        })
+      ];
     }
 
-    const state = this.workspaceState.getProjectEnvironment();
-    if (!state?.projectId || !state?.environmentSlug) {
-      return [new ErrorItem('No project/environment selected', 'Open Control Panel', 'infisicalAi.openControlPanel')];
-    }
-
-    if (this.loading) {
-      return [new LoadingItem()];
-    }
-
-    if (this.error) {
-      if (this.error.includes('Access denied')) {
-        return [new ErrorItem(this.error, 'Check Permissions', 'infisicalAi.openControlPanel')];
+    try {
+      if (!element) {
+        const projects = await this.api.getProjects();
+        if (projects.length === 0) {
+          return [new MessageNode('No projects found', 'info')];
+        }
+        return projects.map((p) => new ProjectNode(p));
       }
-      return [new ErrorItem(this.error, 'Retry', 'infisicalAi.refreshSecrets')];
-    }
 
-    if (!element) {
-      return this.getRootItems();
-    }
-
-    if (element instanceof SecretPathItem) {
-      return this.getSecretsForPath(element.path);
-    }
-
-    return [];
-  }
-
-  private getRootItems(): vscode.TreeItem[] {
-    if (this.secrets.length === 0) {
-      return [new ErrorItem('No secrets found', 'Create Secret', 'infisicalAi.createSecret')];
-    }
-
-    // Group secrets by path
-    const pathGroups = this.groupSecretsByPath(this.getFilteredSecrets());
-    
-    if (pathGroups.size === 1 && pathGroups.has('/')) {
-      // If all secrets are in root path, show them directly
-      return this.getSecretsForPath('/');
-    }
-
-    // Show path groups
-    return Array.from(pathGroups.entries()).map(([path, secrets]) => 
-      new SecretPathItem(path, secrets.length)
-    );
-  }
-
-  private getSecretsForPath(path: string): SecretItem[] {
-    const pathSecrets = this.getFilteredSecrets().filter(s => s.secretPath === path);
-    return pathSecrets.map(secret => new SecretItem(secret));
-  }
-
-  private getFilteredSecrets(): InfisicalSecretV3[] {
-    if (!this.filter) {
-      return this.secrets;
-    }
-
-    return this.secrets.filter(secret => 
-      secret.secretKey.toLowerCase().includes(this.filter) ||
-      secret.secretComment.toLowerCase().includes(this.filter) ||
-      secret.tags.some(tag => tag.name.toLowerCase().includes(this.filter))
-    );
-  }
-
-  private groupSecretsByPath(secrets: InfisicalSecretV3[]): Map<string, InfisicalSecretV3[]> {
-    const groups = new Map<string, InfisicalSecretV3[]>();
-    
-    for (const secret of secrets) {
-      const path = secret.secretPath || '/';
-      if (!groups.has(path)) {
-        groups.set(path, []);
+      if (element.kind === 'project') {
+        const envs = await this.api.getEnvironments(element.project.id);
+        if (envs.length === 0) {
+          return [new MessageNode('No environments', 'info')];
+        }
+        return envs.map(
+          (e) =>
+            new EnvironmentNode(
+              element.project,
+              e,
+              this.hasScope(element.project.id, e.slug, '/')
+            )
+        );
       }
-      groups.get(path)!.push(secret);
+
+      if (element.kind === 'environment') {
+        return this.loadPathChildren(element.project, element.environment, '/');
+      }
+
+      if (element.kind === 'folder') {
+        return this.loadPathChildren(element.project, element.environment, element.fullPath);
+      }
+
+      return [];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load';
+      return [new MessageNode(message, 'error')];
     }
-    
-    return groups;
   }
 
-  private isAccessError(error: any): error is AccessError {
-    return error && typeof error.type === 'string' && typeof error.message === 'string';
-  }
+  private async loadPathChildren(
+    project: InfisicalProject,
+    environment: InfisicalEnvironment,
+    path: string
+  ): Promise<TreeNode[]> {
+    const [folders, secrets] = await Promise.all([
+      this.api.listFolders({
+        workspaceId: project.id,
+        environment: environment.slug,
+        secretPath: path
+      }),
+      this.api.listSecrets({
+        workspaceId: project.id,
+        environment: environment.slug,
+        secretPath: path
+      })
+    ]);
 
-  // Public methods for external access
-  getSecrets(): InfisicalSecretV3[] {
-    return this.secrets;
-  }
+    const secretsRevealed = this.isPathRevealed(project.id, environment.slug, path);
 
-  getCurrentFilter(): string {
-    return this.filter;
-  }
+    const folderNodes = folders
+      .filter((f) => f.name && f.name !== '/')
+      .map(
+        (f) =>
+          new FolderNode(
+            project,
+            environment,
+            path,
+            f,
+            this.hasScope(project.id, environment.slug, joinSecretPath(path, f.name))
+          )
+      );
 
-  getCurrentSecretPath(): string {
-    return this.secretPath;
-  }
+    const secretNodes = secrets.map(
+      (s) => new SecretNode(project, environment, path, s, secretsRevealed)
+    );
 
-  isLoading(): boolean {
-    return this.loading;
-  }
+    if (folderNodes.length === 0 && secretNodes.length === 0) {
+      return [new MessageNode('Empty', 'info')];
+    }
 
-  getError(): string | null {
-    return this.error;
+    return [...folderNodes, ...secretNodes];
   }
 }

@@ -119,51 +119,6 @@ describe('TokenStore', () => {
     });
   });
 
-  describe('legacy token methods', () => {
-    it('should get access token from token info', () => {
-      const tokenInfo: TokenInfo = {
-        accessToken: 'test-token',
-        expiresAt: Date.now() + 3600000,
-        renewalThresholdSeconds: 60
-      };
-
-      mockGlobalState.get.mockReturnValueOnce(tokenInfo);
-      expect(tokenStore.getToken()).toBe('test-token');
-    });
-
-    it('should return undefined when no token info exists', () => {
-      mockGlobalState.get.mockReturnValueOnce(undefined);
-      expect(tokenStore.getToken()).toBeUndefined();
-    });
-
-    it('should create token info from simple token', async () => {
-      const token = 'simple-token';
-      await tokenStore.setToken(token);
-
-      expect(mockGlobalState.update).toHaveBeenCalledWith('infisicalAi.tokenInfo', {
-        accessToken: token,
-        expiresAt: expect.any(Number),
-        renewalThresholdSeconds: 60
-      });
-    });
-
-    it('should check token validity using hasValidToken', () => {
-      const tokenInfo: TokenInfo = {
-        accessToken: 'test-token',
-        expiresAt: Date.now() + 3600000,
-        renewalThresholdSeconds: 60
-      };
-
-      mockGlobalState.get.mockReturnValueOnce(tokenInfo);
-      expect(tokenStore.hasToken()).toBe(true);
-    });
-
-    it('should clear token info when calling clearToken', async () => {
-      await tokenStore.clearToken();
-      expect(mockGlobalState.update).toHaveBeenCalledWith('infisicalAi.tokenInfo', undefined);
-    });
-  });
-
   describe('edge cases', () => {
     it('should handle concurrent token operations', async () => {
       const tokenInfo: TokenInfo = {

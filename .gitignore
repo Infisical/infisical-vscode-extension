@@ -15,8 +15,6 @@ node_modules
 Thumbs.db
 
 # IDE files
-.vscode/settings.json
-.vscode/launch.json
 .idea/
 
 # Logs

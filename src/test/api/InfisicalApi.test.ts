@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
-import { InfisicalApi, UniversalAuthLoginRequest, UniversalAuthLoginResponse, TokenRenewResponse } from '../../api/InfisicalApi';
+import { InfisicalApi } from '../../api/InfisicalApi';
 import { MockTokenStore } from '../mocks/TokenStore.mock';
 
 vi.mock('axios');
@@ -13,7 +13,7 @@ describe('InfisicalApi', () => {
 
   beforeEach(() => {
     tokenStore = new MockTokenStore();
-    
+
     mockAxiosInstance = {
       post: vi.fn(),
       get: vi.fn(),
@@ -28,7 +28,6 @@ describe('InfisicalApi', () => {
     };
 
     mockedAxios.create = vi.fn().mockReturnValue(mockAxiosInstance);
-    
     api = new InfisicalApi('https://us.infisical.com', tokenStore as any);
   });
 
@@ -36,356 +35,225 @@ describe('InfisicalApi', () => {
     vi.clearAllMocks();
   });
 
-  describe('login', () => {
-    it('should successfully authenticate with valid credentials', async () => {
-      const credentials: UniversalAuthLoginRequest = {
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret'
-      };
+  describe('setUserToken', () => {
+    it('stores token info with expiry parsed from JWT', async () => {
+      // JWT with exp = 9999999999 (year 2286)
+      const payload = Buffer.from(JSON.stringify({ exp: 9999999999 })).toString('base64url');
+      const token = `header.${payload}.sig`;
 
-      const mockResponse: UniversalAuthLoginResponse = {
-        accessToken: 'test-access-token',
-        expiresIn: 3600,
-        accessTokenMaxTTL: 7200,
-        tokenType: 'Bearer'
-      };
+      await api.setUserToken(token);
 
-      mockAxiosInstance.post.mockResolvedValueOnce({ data: mockResponse });
-
-      await api.login(credentials);
-
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/api/v1/auth/universal-auth/login',
-        {
-          clientId: credentials.clientId,
-          clientSecret: credentials.clientSecret
-        }
-      );
-
-      const storedTokenInfo = await tokenStore.getTokenInfo();
-      expect(storedTokenInfo).toEqual({
-        accessToken: 'test-access-token',
-        expiresAt: expect.any(Number),
-        renewalThresholdSeconds: 60
-      });
-
-      const storedCredentials = await tokenStore.getCredentials();
-      expect(storedCredentials).toEqual(credentials);
+      const stored = await tokenStore.getTokenInfo();
+      expect(stored?.accessToken).toBe(token);
+      expect(stored?.expiresAt).toBe(9999999999 * 1000);
+      expect(stored?.renewalThresholdSeconds).toBe(0);
     });
 
-    it('should retry on network errors', async () => {
-      const credentials: UniversalAuthLoginRequest = {
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret'
-      };
+    it('falls back to 24h expiry for non-JWT tokens', async () => {
+      const before = Date.now();
+      await api.setUserToken('not-a-jwt');
+      const after = Date.now();
 
-      const mockResponse: UniversalAuthLoginResponse = {
-        accessToken: 'test-access-token',
-        expiresIn: 3600,
-        accessTokenMaxTTL: 7200,
-        tokenType: 'Bearer'
-      };
-
-      mockAxiosInstance.post
-        .mockRejectedValueOnce(new Error('Network error'))
-        .mockRejectedValueOnce(new Error('Network error'))
-        .mockResolvedValueOnce({ data: mockResponse });
-
-      await api.login(credentials);
-
-      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(3);
-    });
-
-    it('should fail after max retries', async () => {
-      const credentials: UniversalAuthLoginRequest = {
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret'
-      };
-
-      mockAxiosInstance.post.mockRejectedValue(new Error('Network error'));
-
-      await expect(api.login(credentials)).rejects.toThrow('Universal Auth Login failed after 3 attempts');
-      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(3);
-    });
-
-    it('should not retry on 401 errors', async () => {
-      const credentials: UniversalAuthLoginRequest = {
-        clientId: 'invalid-client-id',
-        clientSecret: 'invalid-client-secret'
-      };
-
-      const authError = new Error('401 Unauthorized');
-      mockAxiosInstance.post.mockRejectedValueOnce(authError);
-
-      await expect(api.login(credentials)).rejects.toThrow('401 Unauthorized');
-      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('token renewal', () => {
-    beforeEach(async () => {
-      const mockTokenInfo = {
-        accessToken: 'current-token',
-        expiresAt: Date.now() + 30000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(mockTokenInfo);
-    });
-
-    it('should renew token when near expiry', async () => {
-      const mockRenewResponse: TokenRenewResponse = {
-        accessToken: 'new-access-token',
-        expiresIn: 3600,
-        tokenType: 'Bearer'
-      };
-
-      mockAxiosInstance.post.mockResolvedValueOnce({ data: mockRenewResponse });
-
-      const tokenInfo = {
-        accessToken: 'current-token',
-        expiresAt: Date.now() + 30000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
-      const validToken = await (api as any).getValidToken();
-
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/api/v1/auth/token/renew',
-        {},
-        {
-          headers: {
-            Authorization: 'Bearer current-token'
-          }
-        }
-      );
-
-      const updatedTokenInfo = await tokenStore.getTokenInfo();
-      expect(updatedTokenInfo?.accessToken).toBe('new-access-token');
-    });
-
-    it('should not renew token when not near expiry', async () => {
-      const tokenInfo = {
-        accessToken: 'current-token',
-        expiresAt: Date.now() + 300000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
-      const validToken = await (api as any).getValidToken();
-
-      expect(mockAxiosInstance.post).not.toHaveBeenCalledWith('/api/v1/auth/token/renew');
-      expect(validToken?.accessToken).toBe('current-token');
-    });
-
-    it('should handle renewal failure gracefully', async () => {
-      const tokenInfo = {
-        accessToken: 'current-token',
-        expiresAt: Date.now() + 30000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
-      mockAxiosInstance.post.mockRejectedValueOnce(new Error('Renewal failed'));
-
-      const validToken = await (api as any).getValidToken();
-
-      expect(validToken?.accessToken).toBe('current-token');
-    });
-  });
-
-  describe('401 handling in interceptors', () => {
-    it('should attempt token renewal on 401 response', async () => {
-      const mockRenewResponse: TokenRenewResponse = {
-        accessToken: 'renewed-token',
-        expiresIn: 3600,
-        tokenType: 'Bearer'
-      };
-
-      const originalError = {
-        response: { status: 401 },
-        config: { headers: {} }
-      };
-
-      const renewalMock = vi.fn().mockResolvedValue({ data: mockRenewResponse });
-      const retryMock = vi.fn().mockResolvedValue({ data: 'success' });
-
-      mockAxiosInstance.post.mockImplementation((url: string) => {
-        if (url === '/api/v1/auth/token/renew') {
-          return renewalMock();
-        }
-        return Promise.reject(originalError);
-      });
-
-      mockAxiosInstance.request.mockImplementation(retryMock);
-
-      const tokenInfo = {
-        accessToken: 'original-token',
-        expiresAt: Date.now() + 300000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
-      const responseInterceptor = mockAxiosInstance.interceptors.response.use.mock.calls[0][1];
-      const result = await responseInterceptor(originalError);
-
-      expect(renewalMock).toHaveBeenCalled();
-      expect(retryMock).toHaveBeenCalled();
-    });
-
-    it('should logout and throw error if renewal fails on 401', async () => {
-      const originalError = {
-        response: { status: 401 },
-        config: { headers: {} }
-      };
-
-      mockAxiosInstance.post.mockRejectedValueOnce(new Error('Renewal failed'));
-
-      const tokenInfo = {
-        accessToken: 'original-token',
-        expiresAt: Date.now() + 300000,
-        renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
-      const responseInterceptor = mockAxiosInstance.interceptors.response.use.mock.calls[0][1];
-      
-      await expect(responseInterceptor(originalError)).rejects.toThrow('Authentication failed. Please log in again.');
-      
-      expect(await tokenStore.getTokenInfo()).toBeUndefined();
-      expect(await tokenStore.getCredentials()).toBeUndefined();
+      const stored = await tokenStore.getTokenInfo();
+      expect(stored?.expiresAt).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+      expect(stored?.expiresAt).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
     });
   });
 
   describe('logout', () => {
-    it('should clear token and credentials', async () => {
-      const tokenInfo = {
-        accessToken: 'test-token',
-        expiresAt: Date.now() + 3600000,
+    it('clears token info', async () => {
+      await tokenStore.setTokenInfo({
+        accessToken: 'x',
+        expiresAt: Date.now() + 1000,
         renewalThresholdSeconds: 60
-      };
-      
-      const credentials = {
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret'
-      };
-
-      await tokenStore.setTokenInfo(tokenInfo);
-      await tokenStore.setCredentials(credentials);
+      });
 
       await api.logout();
 
       expect(await tokenStore.getTokenInfo()).toBeUndefined();
-      expect(await tokenStore.getCredentials()).toBeUndefined();
     });
   });
 
   describe('isAuthenticated', () => {
-    it('should return true when token is valid', async () => {
-      const tokenInfo = {
-        accessToken: 'test-token',
-        expiresAt: Date.now() + 3600000,
+    it('returns true with a fresh token', async () => {
+      await tokenStore.setTokenInfo({
+        accessToken: 'x',
+        expiresAt: Date.now() + 60_000,
         renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
+      });
       expect(api.isAuthenticated()).toBe(true);
     });
 
-    it('should return false when token is expired', async () => {
-      const tokenInfo = {
-        accessToken: 'test-token',
-        expiresAt: Date.now() - 1000,
+    it('returns false with an expired token', async () => {
+      await tokenStore.setTokenInfo({
+        accessToken: 'x',
+        expiresAt: Date.now() - 1,
         renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
-
+      });
       expect(api.isAuthenticated()).toBe(false);
     });
 
-    it('should return false when no token exists', () => {
+    it('returns false with no token', () => {
       expect(api.isAuthenticated()).toBe(false);
     });
   });
 
-  describe('base URL configuration', () => {
-    it('should set US region URL', () => {
-      api.setBaseUrl('https://us.infisical.com');
-      expect(api.getBaseUrl()).toBe('https://us.infisical.com');
-      expect(mockAxiosInstance.defaults.baseURL).toBe('https://us.infisical.com');
-    });
-
-    it('should set EU region URL', () => {
+  describe('base URL', () => {
+    it('updates the axios baseURL', () => {
       api.setBaseUrl('https://eu.infisical.com');
       expect(api.getBaseUrl()).toBe('https://eu.infisical.com');
       expect(mockAxiosInstance.defaults.baseURL).toBe('https://eu.infisical.com');
     });
   });
 
-  describe('API operations', () => {
+  describe('CRUD', () => {
     beforeEach(async () => {
-      const tokenInfo = {
-        accessToken: 'valid-token',
-        expiresAt: Date.now() + 3600000,
+      await tokenStore.setTokenInfo({
+        accessToken: 'tok',
+        expiresAt: Date.now() + 600_000,
         renewalThresholdSeconds: 60
-      };
-      await tokenStore.setTokenInfo(tokenInfo);
+      });
     });
 
-    it('should get projects successfully', async () => {
-      const mockProjects = [
-        { id: 'proj1', name: 'Project 1', slug: 'project-1' },
-        { id: 'proj2', name: 'Project 2', slug: 'project-2' }
-      ];
+    it('lists projects', async () => {
+      const projects = [{ id: 'p1', name: 'P1', slug: 'p1' }];
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { workspaces: projects } });
 
-      mockAxiosInstance.get.mockResolvedValueOnce({
-        data: { workspaces: mockProjects }
-      });
-
-      const projects = await api.getProjects();
+      const result = await api.getProjects();
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/workspace');
-      expect(projects).toEqual(mockProjects);
+      expect(result).toEqual(projects);
     });
 
-    it('should get environments successfully', async () => {
-      const mockEnvironments = [
-        { id: 'env1', name: 'Development', slug: 'dev' },
-        { id: 'env2', name: 'Production', slug: 'prod' }
-      ];
-
+    it('lists environments', async () => {
+      const environments = [{ id: 'e1', name: 'Dev', slug: 'dev' }];
       mockAxiosInstance.get.mockResolvedValueOnce({
-        data: { environments: mockEnvironments }
+        data: { workspace: { id: 'p1', name: 'P1', slug: 'p1', environments } }
       });
 
-      const environments = await api.getEnvironments('proj1');
+      const result = await api.getEnvironments('p1');
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/workspace/proj1/environments');
-      expect(environments).toEqual(mockEnvironments);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/workspace/p1');
+      expect(result).toEqual(environments);
     });
 
-    it('should get secrets successfully', async () => {
-      const mockSecrets = [
-        {
-          id: 'secret1',
-          key: 'API_KEY',
-          value: 'secret-value',
-          environment: 'dev',
-          createdAt: '2023-01-01T00:00:00Z',
-          updatedAt: '2023-01-01T00:00:00Z'
-        }
-      ];
+    it('lists secrets at a path', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { secrets: [] } });
 
-      mockAxiosInstance.get.mockResolvedValueOnce({
-        data: { secrets: mockSecrets }
+      await api.listSecrets({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretPath: '/api/keys'
       });
-
-      const secrets = await api.getSecrets('proj1', 'dev');
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith(
-        '/api/v3/secrets/raw?workspaceId=proj1&environment=dev'
+        '/api/v3/secrets/raw?workspaceId=p1&environment=dev&secretPath=%2Fapi%2Fkeys'
       );
-      expect(secrets).toEqual(mockSecrets);
+    });
+
+    it('lists folders at a path', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { folders: [] } });
+
+      await api.listFolders({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretPath: '/svc'
+      });
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        '/api/v1/folders?workspaceId=p1&environment=dev&path=%2Fsvc'
+      );
+    });
+
+    it('creates a secret', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        data: { secret: { secretKey: 'KEY' } }
+      });
+
+      await api.createSecret({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretKey: 'KEY',
+        secretValue: 'val',
+        secretPath: '/'
+      });
+
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/api/v3/secrets/raw/KEY',
+        {
+          workspaceId: 'p1',
+          environment: 'dev',
+          secretValue: 'val',
+          secretPath: '/',
+          type: 'shared'
+        }
+      );
+    });
+
+    it('updates a secret', async () => {
+      mockAxiosInstance.patch.mockResolvedValueOnce({
+        data: { secret: { secretKey: 'KEY' } }
+      });
+
+      await api.updateSecret({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretKey: 'KEY',
+        secretValue: 'newval',
+        secretPath: '/'
+      });
+
+      expect(mockAxiosInstance.patch).toHaveBeenCalledWith(
+        '/api/v3/secrets/raw/KEY',
+        {
+          workspaceId: 'p1',
+          environment: 'dev',
+          secretValue: 'newval',
+          secretPath: '/',
+          type: 'shared'
+        }
+      );
+    });
+
+    it('deletes a secret', async () => {
+      mockAxiosInstance.delete.mockResolvedValueOnce({ data: {} });
+
+      await api.deleteSecret({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretKey: 'KEY',
+        secretPath: '/'
+      });
+
+      expect(mockAxiosInstance.delete).toHaveBeenCalledWith(
+        '/api/v3/secrets/raw/KEY',
+        {
+          data: {
+            workspaceId: 'p1',
+            environment: 'dev',
+            secretPath: '/',
+            type: 'shared'
+          }
+        }
+      );
+    });
+
+    it('URL-encodes secret keys with special characters', async () => {
+      mockAxiosInstance.patch.mockResolvedValueOnce({
+        data: { secret: { secretKey: 'A/B' } }
+      });
+
+      await api.updateSecret({
+        workspaceId: 'p1',
+        environment: 'dev',
+        secretKey: 'A/B',
+        secretValue: 'v'
+      });
+
+      expect(mockAxiosInstance.patch).toHaveBeenCalledWith(
+        '/api/v3/secrets/raw/A%2FB',
+        expect.any(Object)
+      );
     });
   });
 });
