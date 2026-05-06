@@ -1,6 +1,6 @@
 {
   "name": "infisical-vscode",
-  "displayName": "Infisical Secrets",
+  "displayName": "Infisical for VS Code",
   "description": "Browse and manage your Infisical secrets without leaving VS Code.",
   "version": "0.0.0",
   "publisher": "infisical",
