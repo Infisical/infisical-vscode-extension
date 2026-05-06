@@ -1,13 +1,13 @@
 {
-  "name": "infisical",
+  "name": "infisical-vscode",
   "displayName": "Infisical",
   "description": "Browse and manage your Infisical secrets without leaving VS Code.",
-  "version": "0.2.0",
+  "version": "0.0.0",
   "publisher": "infisical",
   "icon": "images/logo.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Infisical/infisical-vscode"
+    "url": "https://github.com/Infisical/infisical-vscode-extension"
   },
   "engines": {
     "vscode": "^1.74.0"
