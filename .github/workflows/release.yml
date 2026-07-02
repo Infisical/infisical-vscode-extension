@@ -29,11 +29,12 @@ jobs:
       - name: Package extension
         run: npx vsce package
 
+      - name: Publish to Open VSX
+        run: npx ovsx publish *.vsix --pat ${{ secrets.OPEN_VSX_TOKEN }}
+        
       - name: Publish to VS Code Marketplace
         run: npx vsce publish --packagePath *.vsix --pat ${{ secrets.AZURE_DEVOPS_PAT }}
 
-      - name: Publish to Open VSX
-        run: npx ovsx publish *.vsix --pat ${{ secrets.OPEN_VSX_TOKEN }}
 
       - name: Upload .vsix to GitHub release
         uses: softprops/action-gh-release@v2
