@@ -4,6 +4,7 @@
   "description": "Browse and manage your Infisical secrets without leaving VS Code.",
   "version": "0.0.0",
   "publisher": "infisical",
+  "license": "MIT",
   "icon": "images/logo.png",
   "repository": {
     "type": "git",
