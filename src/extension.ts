@@ -114,23 +114,25 @@ const US_URL = "https://us.infisical.com";
 const EU_URL = "https://eu.infisical.com";
 
 async function login() {
-  const currentBaseUrl = vscode.workspace
+  // Only surface the user/global-scoped setting as a one-click option. The
+  // merged value can include workspace settings (.vscode/settings.json), which
+  // a malicious repo could point at an internal host — we don't want to
+  // pre-select that. The login flow itself always writes to Global scope.
+  const inspected = vscode.workspace
     .getConfiguration("infisical")
-    .get<string>("baseUrl", US_URL);
+    .inspect<string>("baseUrl");
+  const currentBaseUrl = inspected?.globalValue;
 
-  const isCurrentCustom = currentBaseUrl !== US_URL && currentBaseUrl !== EU_URL;
+  const isCurrentCustom =
+    !!currentBaseUrl && currentBaseUrl !== US_URL && currentBaseUrl !== EU_URL;
 
   const regions: { label: string; value: string; description?: string }[] = [];
 
   if (isCurrentCustom) {
-    let host: string;
-    try {
-      host = new URL(currentBaseUrl).host;
-    } catch {
-      host = currentBaseUrl;
-    }
     regions.push({
-      label: `Self-hosted (${host})`,
+      // Show the full URL (not just the host) so the user can scrutinise it
+      // before selecting.
+      label: `Self-hosted (${currentBaseUrl})`,
       value: currentBaseUrl,
       description: "Currently configured",
     });
@@ -273,34 +275,45 @@ function openBrowserLogin(baseUrl: string): Promise<string> {
         vscode.Uri.parse(`${baseUrl}/login?callback_port=${port}`),
       );
 
-      offerManualTokenPaste(finish);
+      void offerManualTokenPaste(finish, () => settled);
     });
   });
 }
 
 async function offerManualTokenPaste(
   finish: (tokenOrErr: string | Error) => void,
+  isSettled: () => boolean,
 ) {
-  const action = await vscode.window.showInformationMessage(
-    'Completing login in browser. If you see "Unable to reach CLI", copy the token and paste it here.',
-    "Paste Token",
-  );
-  if (action !== "Paste Token") return;
-
-  const raw = await vscode.window.showInputBox({
-    prompt: 'Paste the token from the "Unable to reach CLI" page',
-    password: true,
-    ignoreFocusOut: true,
-  });
-  if (!raw) return;
-
-  const token = decodeCliToken(raw);
-  if (token) {
-    finish(token);
-  } else {
-    vscode.window.showErrorMessage(
-      "Could not extract a valid token. Please copy the full value from the browser and try again.",
+  // Loop so the flow can be re-triggered after an accidental dismissal or an
+  // invalid paste, until the login settles some other way (HTTP callback or
+  // timeout) or the user opts out.
+  while (!isSettled()) {
+    const action = await vscode.window.showInformationMessage(
+      'Completing login in browser. If you see "Unable to reach CLI", copy the token and paste it here.',
+      "Paste Token",
     );
+    if (isSettled()) return;
+    if (action !== "Paste Token") return;
+
+    const raw = await vscode.window.showInputBox({
+      prompt: 'Paste the token from the "Unable to reach CLI" page',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (isSettled()) return;
+    if (!raw) continue;
+
+    const token = decodeCliToken(raw);
+    if (token) {
+      finish(token);
+      return;
+    }
+
+    const retry = await vscode.window.showErrorMessage(
+      "Could not extract a valid token. Please copy the full value from the browser.",
+      "Try Again",
+    );
+    if (retry !== "Try Again") return;
   }
 }
 
@@ -314,8 +327,10 @@ function decodeCliToken(raw: string): string | undefined {
     // not base64-encoded JSON
   }
 
+  // Fall back to a bare JWT: three non-empty dot-separated segments.
   const trimmed = raw.trim();
-  if (trimmed.split(".").length === 3) {
+  const parts = trimmed.split(".");
+  if (parts.length === 3 && parts.every((p) => p.length > 0)) {
     return trimmed;
   }
 
