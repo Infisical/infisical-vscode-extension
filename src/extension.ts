@@ -110,18 +110,44 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
+const US_URL = "https://us.infisical.com";
+const EU_URL = "https://eu.infisical.com";
+
 async function login() {
-  const regions = [
+  // Only surface the user/global-scoped setting as a one-click option. The
+  // merged value can include workspace settings (.vscode/settings.json), which
+  // a malicious repo could point at an internal host — we don't want to
+  // pre-select that. The login flow itself always writes to Global scope.
+  const inspected = vscode.workspace
+    .getConfiguration("infisical")
+    .inspect<string>("baseUrl");
+  const currentBaseUrl = inspected?.globalValue;
+
+  const isCurrentCustom =
+    !!currentBaseUrl && currentBaseUrl !== US_URL && currentBaseUrl !== EU_URL;
+
+  const regions: { label: string; value: string; description?: string }[] = [];
+
+  if (isCurrentCustom) {
+    regions.push({
+      // Show the full URL (not just the host) so the user can scrutinise it
+      // before selecting.
+      label: `Self-hosted (${currentBaseUrl})`,
+      value: currentBaseUrl,
+      description: "Currently configured",
+    });
+  }
+
+  regions.push(
+    { label: "US Region (us.infisical.com)", value: US_URL },
+    { label: "EU Region (eu.infisical.com)", value: EU_URL },
     {
-      label: "US Region (us.infisical.com)",
-      value: "https://us.infisical.com",
+      label: isCurrentCustom
+        ? "Self-hosted (different URL)"
+        : "Self-hosted (custom URL)",
+      value: "CUSTOM",
     },
-    {
-      label: "EU Region (eu.infisical.com)",
-      value: "https://eu.infisical.com",
-    },
-    { label: "Self-hosted (custom URL)", value: "CUSTOM" },
-  ];
+  );
 
   const selected = await vscode.window.showQuickPick(regions, {
     placeHolder: "Select your Infisical region",
@@ -133,6 +159,7 @@ async function login() {
     const custom = await vscode.window.showInputBox({
       prompt: "Enter your self-hosted Infisical URL",
       placeHolder: "https://your-infisical-instance.com",
+      value: isCurrentCustom ? currentBaseUrl : undefined,
       ignoreFocusOut: true,
       validateInput: (v) => {
         if (!v) return "URL is required";
@@ -171,16 +198,27 @@ async function login() {
 
 function openBrowserLogin(baseUrl: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const server = http.createServer();
 
-    server.on("error", reject);
+    const finish = (tokenOrErr: string | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.close();
+      if (typeof tokenOrErr === "string") resolve(tokenOrErr);
+      else reject(tokenOrErr);
+    };
+
+    server.on("error", (err) => finish(err));
+
+    let timer: NodeJS.Timeout;
 
     server.listen(0, "127.0.0.1", async () => {
       const { port } = server.address() as net.AddressInfo;
 
-      const timer = setTimeout(() => {
-        server.close();
-        reject(new Error("Login timed out. Please try again."));
+      timer = setTimeout(() => {
+        finish(new Error("Login timed out. Please try again."));
       }, 120_000);
 
       const corsHeaders = {
@@ -224,14 +262,11 @@ function openBrowserLogin(baseUrl: string): Promise<string> {
               : '<html><body style="font-family:system-ui;padding:40px;text-align:center"><h2>Login failed</h2><p>No token received.</p></body></html>',
           );
 
-          clearTimeout(timer);
-          server.close();
-
           if (token) {
-            resolve(token);
+            finish(token);
             log.appendLine("Successfully logged into Infisical");
           } else {
-            reject(new Error("No token received from Infisical"));
+            finish(new Error("No token received from Infisical"));
           }
         });
       });
@@ -239,8 +274,67 @@ function openBrowserLogin(baseUrl: string): Promise<string> {
       await vscode.env.openExternal(
         vscode.Uri.parse(`${baseUrl}/login?callback_port=${port}`),
       );
+
+      void offerManualTokenPaste(finish, () => settled);
     });
   });
+}
+
+async function offerManualTokenPaste(
+  finish: (tokenOrErr: string | Error) => void,
+  isSettled: () => boolean,
+) {
+  // Loop so the flow can be re-triggered after an accidental dismissal or an
+  // invalid paste, until the login settles some other way (HTTP callback or
+  // timeout) or the user opts out.
+  while (!isSettled()) {
+    const action = await vscode.window.showInformationMessage(
+      'Completing login in browser. If you see "Unable to reach CLI", copy the token and paste it here.',
+      "Paste Token",
+    );
+    if (isSettled()) return;
+    if (action !== "Paste Token") return;
+
+    const raw = await vscode.window.showInputBox({
+      prompt: 'Paste the token from the "Unable to reach CLI" page',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (isSettled()) return;
+    if (!raw) continue;
+
+    const token = decodeCliToken(raw);
+    if (token) {
+      finish(token);
+      return;
+    }
+
+    const retry = await vscode.window.showErrorMessage(
+      "Could not extract a valid token. Please copy the full value from the browser.",
+      "Try Again",
+    );
+    if (retry !== "Try Again") return;
+  }
+}
+
+function decodeCliToken(raw: string): string | undefined {
+  try {
+    const decoded = JSON.parse(Buffer.from(raw, "base64").toString());
+    if (typeof decoded.JTWToken === "string" && decoded.JTWToken) {
+      return decoded.JTWToken;
+    }
+  } catch {
+    // not base64-encoded JSON
+  }
+
+  // Fall back to a bare JWT: three non-empty dot-separated segments.
+  const trimmed = raw.trim();
+  const parts = trimmed.split(".");
+  if (parts.length === 3 && parts.every((p) => p.length > 0)) {
+    return trimmed;
+  }
+
+  return undefined;
 }
 
 async function logout() {
