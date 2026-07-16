@@ -1,5 +1,5 @@
-import axios, { AxiosInstance } from 'axios';
-import { TokenStore } from '../utils/TokenStore';
+import axios, { AxiosInstance } from "axios";
+import { TokenStore } from "../utils/TokenStore";
 
 export interface InfisicalProject {
   id: string;
@@ -22,7 +22,7 @@ export interface InfisicalSecret {
   secretKey: string;
   secretValue: string;
   secretComment: string;
-  type: 'shared' | 'personal';
+  type: "shared" | "personal";
   secretPath: string;
   createdAt: string;
   updatedAt: string;
@@ -97,15 +97,15 @@ export class InfisicalApi {
   constructor(
     private baseUrl: string,
     private tokenStore: TokenStore,
-    private onUnauthorized?: () => void
+    private onUnauthorized?: () => void,
   ) {
     this.client = axios.create({
       baseURL: baseUrl,
       timeout: 30000,
       headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Infisical-VSCode/0.2.0'
-      }
+        "Content-Type": "application/json",
+        "User-Agent": "Infisical-VSCode/0.2.0",
+      },
     });
 
     this.client.interceptors.request.use(async (config) => {
@@ -124,7 +124,7 @@ export class InfisicalApi {
           this.onUnauthorized?.();
         }
         return Promise.reject(error);
-      }
+      },
     );
   }
 
@@ -146,12 +146,12 @@ export class InfisicalApi {
     await this.tokenStore.setTokenInfo({
       accessToken: token,
       expiresAt,
-      renewalThresholdSeconds: 0
+      renewalThresholdSeconds: 0,
     });
   }
 
   async checkAuth(): Promise<void> {
-    await this.client.post('/api/v1/auth/checkAuth');
+    await this.client.post("/api/v1/auth/checkAuth");
   }
 
   async logout(): Promise<void> {
@@ -159,12 +159,21 @@ export class InfisicalApi {
   }
 
   async getProjects(): Promise<InfisicalProject[]> {
-    const response = await this.client.get<ProjectsResponse>('/api/v1/workspace');
+    const response = await this.client.get<ProjectsResponse>(
+      "/api/v1/workspace",
+      {
+        params: {
+          type: "secret-manager",
+        },
+      },
+    );
     return response.data.workspaces || [];
   }
 
   async getEnvironments(workspaceId: string): Promise<InfisicalEnvironment[]> {
-    const response = await this.client.get<ProjectResponse>(`/api/v1/workspace/${workspaceId}`);
+    const response = await this.client.get<ProjectResponse>(
+      `/api/v1/workspace/${workspaceId}`,
+    );
     return response.data.workspace?.environments || [];
   }
 
@@ -172,10 +181,10 @@ export class InfisicalApi {
     const params = new URLSearchParams({
       workspaceId: request.workspaceId,
       environment: request.environment,
-      secretPath: request.secretPath || '/'
+      secretPath: request.secretPath || "/",
     });
     const response = await this.client.get<ListSecretsResponse>(
-      `/api/v3/secrets/raw?${params.toString()}`
+      `/api/v3/secrets/raw?${params.toString()}`,
     );
     return response.data.secrets || [];
   }
@@ -184,10 +193,10 @@ export class InfisicalApi {
     const params = new URLSearchParams({
       workspaceId: request.workspaceId,
       environment: request.environment,
-      path: request.secretPath || '/'
+      path: request.secretPath || "/",
     });
     const response = await this.client.get<ListFoldersResponse>(
-      `/api/v1/folders?${params.toString()}`
+      `/api/v1/folders?${params.toString()}`,
     );
     return response.data.folders || [];
   }
@@ -198,10 +207,10 @@ export class InfisicalApi {
       {
         workspaceId: request.workspaceId,
         environment: request.environment,
-        secretValue: request.secretValue ?? '',
-        secretPath: request.secretPath || '/',
-        type: 'shared'
-      }
+        secretValue: request.secretValue ?? "",
+        secretPath: request.secretPath || "/",
+        type: "shared",
+      },
     );
     return response.data.secret;
   }
@@ -212,10 +221,10 @@ export class InfisicalApi {
       {
         workspaceId: request.workspaceId,
         environment: request.environment,
-        secretValue: request.secretValue ?? '',
-        secretPath: request.secretPath || '/',
-        type: 'shared'
-      }
+        secretValue: request.secretValue ?? "",
+        secretPath: request.secretPath || "/",
+        type: "shared",
+      },
     );
     return response.data.secret;
   }
@@ -227,18 +236,20 @@ export class InfisicalApi {
         data: {
           workspaceId: request.workspaceId,
           environment: request.environment,
-          secretPath: request.secretPath || '/',
-          type: 'shared'
-        }
-      }
+          secretPath: request.secretPath || "/",
+          type: "shared",
+        },
+      },
     );
   }
 }
 
 function parseJwtExpiry(token: string): number | undefined {
   try {
-    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
-    return typeof payload.exp === 'number' ? payload.exp * 1000 : undefined;
+    const payload = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString(),
+    );
+    return typeof payload.exp === "number" ? payload.exp * 1000 : undefined;
   } catch {
     return undefined;
   }
