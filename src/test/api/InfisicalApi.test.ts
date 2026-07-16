@@ -121,7 +121,9 @@ describe('InfisicalApi', () => {
 
       const result = await api.getProjects();
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/workspace');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/workspace', {
+        params: { type: 'secret-manager' }
+      });
       expect(result).toEqual(projects);
     });
 
